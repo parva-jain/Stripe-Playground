@@ -1,6 +1,7 @@
 require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_KEY);
 const { getPurchasablePlans } = require("./billing");
+const { paymentPlans, ipfsPlans } = require("./paymentPlans");
 
 class CustomError extends Error {
   statusCode;
@@ -43,11 +44,8 @@ async function upsertCustomer(walletAddress, email) {
   return customer;
 }
 
-exports.create_session_order = async (address, subID, emailId) => {
-  if (emailId === undefined) {
-    throw new CustomError("Forbidden", 403, "Email not updated in profile");
-  }
-  const plans = (await getPurchasablePlans()).activePurchasablePlans;
+async function fetchPlan(planType, subID) {
+  const plans = planType === "Filecoin" ? paymentPlans : ipfsPlans;
 
   const plan = plans.find((elem) => elem.index === subID);
   if (!plan) {
@@ -57,42 +55,129 @@ exports.create_session_order = async (address, subID, emailId) => {
       `No active Plan matches id:${subID}`
     );
   }
-  const customer = await upsertCustomer(address, emailId);
+  return plan;
+}
 
-  const session = await stripe.checkout.sessions.create({
+async function checkoutHandler(planType, subID, plan, customer, address) {
+  const mode =
+    planType === "Filecoin" && subID < 3 ? "payment" : "subscription";
+
+  const priceDataObject = {
+    currency: "usd",
+    product_data: {
+      name: `Lighthouse ${planType} Plan: ${plan.planName}`,
+      description: `Lighthouse Topup storage: ${plan.storageInGB}GB \n Plus ${plan.bandwidthInGB}GB bandwidth`,
+      metadata: { planID: plan.index, ...plan.detail },
+    },
+    unit_amount: plan.amount * 100,
+    // recurring: {
+    //   interval: "year",
+    // },
+  };
+
+  if (mode == "subscription") {
+    const frequency = planType === "Filecoin" ? "year" : "month";
+    priceDataObject.recurring = {
+      interval: frequency,
+    };
+  }
+  const lineItemObject = {
+    price_data: priceDataObject,
+    quantity: 1,
+  };
+
+  const sessionObject = {
     payment_method_types: ["card"],
     phone_number_collection: {
       enabled: true,
     },
-    invoice_creation: {
-      enabled: true,
-      invoice_data: {
-        metadata: {
-          planID: plan.index,
-          ...plan.detail,
-          walletAddress: address,
-        },
-      },
-    },
-    line_items: [
-      {
-        price_data: {
-          currency: "usd",
-          product_data: {
-            name: `Lighthouse Plan: ${plan.detail.planName}`,
-            description: `Lighthouse Topup storage: ${plan.detail.storageInGB}GB \n Plus ${plan.detail.bandwidthInGB}GB bandwidth`,
-            metadata: { planID: plan.index, ...plan.detail },
-          },
-          unit_amount: plan.amount / 1e4,
-        },
-        quantity: 1,
-      },
-    ],
-    mode: "payment",
+    mode: mode,
+    // billing_address_collection: "auto",
     customer: customer.id,
-    // customer_email: emailId,
     success_url: `http://localhost:3000/`,
     cancel_url: `http://localhost:3000/`,
-  });
+    line_items: [lineItemObject],
+  };
+
+  sessionObject.metadata = {
+    planID: plan.index,
+    ...plan.detail,
+    walletAddress: address,
+  };
+
+  if (mode == "payment") {
+    sessionObject.invoice_creation = {
+      enabled: true,
+    };
+  }
+  return sessionObject;
+}
+
+exports.create_session_order = async (address, planType, subID, emailId) => {
+  if (emailId === undefined) {
+    throw new CustomError("Forbidden", 403, "Email not updated in profile");
+  }
+  // const plans = (await getPurchasablePlans()).activePurchasablePlans;
+  const plans = planType === "Filecoin" ? paymentPlans : ipfsPlans;
+
+  const plan = await fetchPlan(planType, subID);
+  const customer = await upsertCustomer(address, emailId);
+
+  // Check if the customer already has an active subscription
+  // const subscriptions = await stripe.subscriptions.list({
+  //   customer: customer.id,
+  //   status: "active",
+  //   limit: 1,
+  // });
+
+  // if (subscriptions.data.length > 0) {
+  //   // Customer already has an active subscription, send them to biiling portal to manage subscription
+
+  //   const stripeSession = await stripe.billingPortal.sessions.create({
+  //     customer: customer.id,
+  //     return_url: "http://localhost:3000/",
+  //   });
+  //   return { url: stripeSession.url };
+  // }
+
+  const sessionObject = await checkoutHandler(
+    planType,
+    subID,
+    plan,
+    customer,
+    address
+  );
+  const session = await stripe.checkout.sessions.create(sessionObject);
   return { url: session.url };
 };
+
+// exports.create_invoice_order = async (address, emailId) => {
+//   const customer = await upsertCustomer(address, emailId);
+
+//   // Define customer ID, price IDs, and quantity of items
+//   const customerId = customer.id;
+//   const featurePriceId1 = "price_1Oes9qSIY6jqRpLu3G3SQ5ev";
+
+//   const featureUsage1 = 2; // Replace with actual usage quantity
+
+//   // Create an invoice
+//   const invoice = await stripe.invoices.create({
+//     customer: customerId,
+//     collection_method: "send_invoice",
+//     days_until_due: 30,
+//   });
+
+//   const invoiceItem = await stripe.invoiceItems.create({
+//     customer: customerId,
+//     price: featurePriceId1,
+//     invoice: invoice.id,
+//     description: "Additional charges for using premium features",
+//   });
+
+//   await stripe.invoices.sendInvoice(invoice.id);
+
+//   // Log the payment intent details
+//   console.log("Sent Invoice");
+
+//   return { status: "success" };
+// };
