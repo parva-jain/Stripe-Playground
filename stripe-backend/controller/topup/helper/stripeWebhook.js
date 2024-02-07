@@ -28,6 +28,7 @@ const processStripePayment = async (data, eventType) => {
     // Add info to DB
 
     case "checkout.session.completed":
+      console.log("Inside checkout.session.completed Event");
       try {
         const metadata = data.metadata;
         const id = data.id;
@@ -73,20 +74,27 @@ const processStripePayment = async (data, eventType) => {
       break;
 
     case "invoice.payment_succeeded":
-      const invoice = data;
-
       // On payment successful, get subscription and customer details
-      const subscription = await stripe.subscriptions.retrieve(
-        data.subscription
-      );
+      console.log("Inside invoice.payment_succeeded Event");
       const customer = await stripe.customers.retrieve(data.customer);
 
+      if (data.billing_reason === "manual") {
+        console.log("Onetime payment Received");
+      }
+
+      if (data.billing_reason === "subscription_create") {
+        console.log("New Subscription created with subId ", data.subscription);
+      }
+
       if (
-        invoice.billing_reason === "subscription_cycle" ||
-        invoice.billing_reason === "subscription_update"
+        data.billing_reason === "subscription_cycle" ||
+        data.billing_reason === "subscription_update"
       ) {
+        const subscription = await stripe.subscriptions.retrieve(
+          data.subscription
+        );
         console.log(
-          `Recurring subscription payment successful for Invoice ID: ${invoice.id}`
+          `Recurring subscription payment successful for Sub ID: ${data.subscription}`
         );
       }
 
@@ -94,10 +102,8 @@ const processStripePayment = async (data, eventType) => {
       break;
 
     // case "customer.subscription.updated": {
-    //   const subscription = data;
-    //   // console.log(event);
-    //   if (subscription.cancel_at_period_end) {
-    //     console.log(`Subscription ${subscription.id} was canceled.`);
+    //   if (data.cancel_at_period_end) {
+    //     console.log(`Subscription ${data.id} was canceled.`);
     //     // DB code to update the customer's subscription status in your database
     //   } else {
     //     console.log(`Subscription ${subscription.id} was restarted.`);
